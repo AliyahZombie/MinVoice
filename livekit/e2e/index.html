@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>LiveKit E2E</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, monospace; margin: 0; display: flex; }
+  #out  { flex: 1; padding: 12px; white-space: pre-wrap; word-break: break-all; }
+  #side { width: 340px; border-left: 1px solid #ddd; padding: 12px; }
+  canvas { width: 320px; height: 240px; background: #111; }
+  h3 { margin: 0 0 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="out">starting…</div>
+<div id="side"><h3 id="roleLabel"></h3><canvas id="cv" width="320" height="240"></canvas></div>
+
+<script type="module">
+// LiveKit 端到端自测页:验证 信令(wss) → ICE/DTLS → SFU 转发 整条链路
+//   ?role=publish   画布造一路视频推上去 + 发一条 data
+//   ?role=subscribe 订阅并统计真实收到的字节数
+// 结果实时渲染到页面,并挂到 window.__state 供自动化读取。
+import { Room, RoomEvent } from './livekit-client.esm.mjs';
+
+const P = new URLSearchParams(location.search);
+const URL_ = P.get('url');
+const TOKEN = P.get('token');
+const ROLE = P.get('role') || 'publish';
+
+const state = { role: ROLE, phase: 'init', t0: new Date().toISOString() };
+const out = document.getElementById('out');
+const render = () => { out.textContent = JSON.stringify(state, null, 2); };
+const set = (k, v) => { state[k] = v; render(); };
+window.__state = state;
+document.getElementById('roleLabel').textContent = 'role = ' + ROLE;
+render();
+
+// 无头 Chrome 场景:把结果回传给 e2e/server.mjs 落盘,便于自动断言
+function report() {
+  try {
+    fetch('/result?role=' + encodeURIComponent(ROLE), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state),
+    }).catch(() => {});
+  } catch {}
+}
+setInterval(report, 2000);
+setTimeout(report, 1200);
+window.addEventListener('beforeunload', report);
+
+const err = (e) => set('error', (e && e.stack) || String(e));
+
+// livekit-client 把 PeerConnection 藏在 engine 里,拿来做媒体面证据
+function pcs(room) {
+  const o = {};
+  const add = (name, obj) => {
+    try {
+      const pc = obj && (obj.pc || (typeof obj.getPeerConnection === 'function' ? obj.getPeerConnection() : null));
+      if (pc && typeof pc.getStats === 'function') o[name] = pc;
+    } catch {}
+  };
+  add('publisher', room.engine?.pcManager?.publisher);
+  add('subscriber', room.engine?.pcManager?.subscriber);
+  add('publisher(alt)', room.engine?.publisher);
+  add('subscriber(alt)', room.engine?.subscriber);
+  return o;
+}
+
+let subTrack = null;   // 订阅到的远端 track
+let pubTrack = null;   // 本地推出去的 track
+
+async function sampleMedia(room) {
+  const out = {};
+
+  // ① 公开 API:track 级统计,订阅端最硬的证据
+  if (subTrack) {
+    try {
+      const rs = await subTrack.getReceiverStats();
+      if (rs) {
+        const { bytesReceived = 0, packetsReceived = 0, framesDecoded = 0, framesReceived = 0, packetsLost = 0 } = rs;
+        out.receiverStats = { bytesReceived, packetsReceived, framesDecoded, framesReceived, packetsLost };
+      } else {
+        out.receiverStats = null;
+      }
+    } catch (e) { out.receiverStatsError = String(e); }
+  }
+
+  // ② 公开 API:发送端统计
+  if (pubTrack) {
+    try {
+      const report = await pubTrack.getRTCStatsReport();
+      const agg = { outboundBytes: 0, outboundPackets: 0, framesEncoded: 0 };
+      report?.forEach?.((r) => {
+        if (r.type === 'outbound-rtp') {
+          agg.outboundBytes += r.bytesSent || 0;
+          agg.outboundPackets += r.packetsSent || 0;
+          agg.framesEncoded += r.framesEncoded || 0;
+        }
+      });
+      out.senderStats = agg;
+    } catch (e) { out.senderStatsError = String(e); }
+  }
+
+  // ③ PeerConnection 级:证明媒体走 UDP 直连还是退化到 TCP 7881
+  for (const [name, pc] of Object.entries(pcs(room))) {
+    try {
+      const stats = await pc.getStats();
+      const cands = {}, pairs = [];
+      let dtls, iceState;
+      stats.forEach((r) => {
+        if (r.type === 'local-candidate') cands[r.id] = r;
+        if (r.type === 'candidate-pair') pairs.push(r);
+        if (r.type === 'transport') { dtls = r.dtlsState; iceState = r.iceState; }
+      });
+      const sel = pairs.find((p) => p.selected) || pairs.find((p) => p.state === 'succeeded' && p.nominated);
+      const lc = sel && cands[sel.localCandidateId];
+      out[name] = {
+        pc: { ice: pc.iceConnectionState, conn: pc.connectionState, dtls, iceState },
+        selectedPair: sel ? {
+          protocol: lc?.protocol,          // udp = 直连媒体端口;tcp = 走 7881 兜底
+          localType: lc?.candidateType,
+          rttSec: sel.currentRoundTripTime,
+          bytesSent: sel.bytesSent,
+          bytesReceived: sel.bytesReceived,
+        } : null,
+      };
+    } catch (e) { out[name] = { error: String(e) }; }
+  }
+
+  if (!state.debug) {
+    // 服务端下发给客户端的 ICE 配置:能看到内置 TURN 是否被广告出去
+    let iceServers = null;
+    try {
+      const pc = Object.values(pcs(room))[0];
+      iceServers = pc?.getConfiguration?.().iceServers ?? null;
+    } catch {}
+    try {
+      iceServers = iceServers || room.engine?.latestJoinResponse?.iceServers || null;
+    } catch {}
+    set('debug', {
+      hasEngine: !!room.engine,
+      pcTransportNames: Object.keys(pcs(room)),
+      iceServers: iceServers
+        ? iceServers.map((s) => ({ urls: s.urls, hasCredential: !!s.credential, username: s.username }))
+        : 'unavailable',
+    });
+  }
+  set('media', out);
+}
+
+// ---------------------------------------------------------------- 推流端
+function makeCanvasTrack() {
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  let i = 0;
+  setInterval(() => {
+    ctx.fillStyle = `hsl(${(i * 7) % 360},80%,45%)`;
+    ctx.fillRect(0, 0, 320, 240);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px monospace';
+    ctx.fillText(`frame ${i}`, 12, 34);
+    i++;
+  }, 100);
+  return cv.captureStream(10).getVideoTracks()[0];
+}
+
+async function runPublisher() {
+  const room = new Room({ adaptiveStream: false, dynacast: false });
+  room.on(RoomEvent.Disconnected, () => set('phase', 'disconnected'));
+  room.on(RoomEvent.Reconnecting, () => set('phase', 'reconnecting'));
+  room.on(RoomEvent.Reconnected, () => set('phase', 'reconnected'));
+
+  await room.connect(URL_, TOKEN);
+  set('phase', 'connected');
+  set('localIdentity', room.localParticipant.identity);
+  set('serverVersion', room.serverVersion);
+
+  const track = makeCanvasTrack();
+  const pub = await room.localParticipant.publishTrack(track);
+  pubTrack = pub.track;
+  set('published', { sid: pub.trackSid, kind: pub.kind, source: pub.source });
+
+  // 持续发 data:订阅端随时进来都能收到,用来验证数据通道
+  let n = 0;
+  const beat = setInterval(() => {
+    n++;
+    room.localParticipant
+      .publishData(new TextEncoder().encode(`ping-${n}@${new Date().toISOString()}`), { reliable: true, topic: 'e2e' })
+      .catch((e) => set('dataError', String(e)));
+  }, 2000);
+  room.on(RoomEvent.Disconnected, () => clearInterval(beat));
+  set('dataSent', true);
+
+  setInterval(() => sampleMedia(room), 2000);
+  setTimeout(() => sampleMedia(room), 1500);
+}
+
+// ---------------------------------------------------------------- 订阅端
+async function runSubscriber() {
+  // role=relay 时强制 relay-only:只有 TURN 真的可用才能连通,用来验证内置 TURN
+  const relayOnly = ROLE === 'relay';
+  const room = new Room(relayOnly ? { rtcConfig: { iceTransportPolicy: 'relay' } } : {});
+  set('relayOnly', relayOnly);
+  room.on(RoomEvent.Disconnected, () => set('phase', 'disconnected'));
+
+  room.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    subTrack = track;
+    set('subscribed', { sid: pub.trackSid, kind: track.kind, from: participant.identity, at: new Date().toISOString() });
+    // 不 attach:避免无声卡环境下的 autoplay 报错,统计数字一样能证明媒体到达
+  });
+  room.on(RoomEvent.DataReceived, (payload, participant) => {
+    set('dataReceived', { text: new TextDecoder().decode(payload), from: participant?.identity, at: new Date().toISOString() });
+  });
+  // 聊天消息走 ChatMessage 包,不触发 DataReceived,得单独听。
+  // MinVoice(Rust 端)用 SDK 的 send_chat_message 发消息,靠这个验证真的送达对端。
+  room.on(RoomEvent.ChatMessage, (msg, participant) => {
+    set('chatReceived', {
+      text: msg?.message,
+      from: participant?.identity,
+      at: new Date().toISOString(),
+    });
+  });
+  room.on(RoomEvent.ParticipantConnected, (p) => set('sawParticipant', p.identity));
+
+  await room.connect(URL_, TOKEN);
+  set('phase', 'connected');
+  set('localIdentity', room.localParticipant.identity);
+  set('serverVersion', room.serverVersion);
+  set('remoteParticipants', room.remoteParticipants.size);
+
+  setInterval(() => sampleMedia(room), 2000);
+  setTimeout(() => sampleMedia(room), 1500);
+}
+
+const runner = ROLE === 'publish' ? runPublisher : runSubscriber;
+runner().catch(err);
+window.addEventListener('error', (e) => err(e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => err(e.reason));
+</script>
+</body>
+</html>

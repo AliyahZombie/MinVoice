@@ -1,0 +1,40 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri 构建产物
+src-tauri/target
+src-tauri/gen/schemas
+
+# 本机密钥副本 —— 绝不能进仓库
+# （credentials* 覆盖凭据及其历史备份；模板 .example 除外）
+livekit/credentials*
+!livekit/credentials.env.example
+livekit/livekit-config.yaml
+
+# 本机 SSH 配置（服务器地址与密钥路径），只存在于开发机
+.sshcfg/
+
+# e2e 测试跑出来的中间结果
+livekit/e2e/results/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

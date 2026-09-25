@@ -1,0 +1,24 @@
+# 跨平台换行约定：仓库内统一 LF，检出到 Windows 也不转换。
+# Rust / Node / Tauri 工具链都能正确处理 LF，避免 CRLF 引起无谓 diff。
+* text=auto eol=lf
+
+# Windows 批处理脚本保留 CRLF，否则 cmd 解析可能出问题
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做文本转换
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.a binary
+*.lib binary
+*.pdb binary

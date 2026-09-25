@@ -1,0 +1,13 @@
+# 密钥与临时产物 —— 绝不要提交
+credentials.env
+credentials.json
+livekit-config.yaml
+
+# e2e 测试产物
+e2e/results/
+e2e/chrome-pub/
+e2e/chrome-sub/
+e2e/.tokens/
+
+# 下载的第三方 bundle
+e2e/livekit-client.esm.mjs
