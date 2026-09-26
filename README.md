@@ -15,7 +15,11 @@
 - **设置页**:服务器地址、API Key、API Secret、房间、昵称、参与者 ID;
   高级里可选 token 有效期、回声消除/降噪/自动增益、输入输出设备、是否启动即进房间。
 - **房间页**:顶部是连接状态/房间名/人数/通话时长;左侧参与者卡片(说话时描边高亮,
-  静音/未开麦有角标);右侧文字聊天;底部是麦克风、扬声器(闭麦)、设备选择、离开。
+  静音/未开麦有角标);每位远端参与者有 **0–200% 本地音量滑块**，支持静音和恢复原声;
+  文字聊天;底部是麦克风、扬声器(闭麦)、设备选择、离开。
+
+逐人音量只影响你听到的声音，按服务器地址与参与者 ID 保存在本机，
+重连、重新开麦和下次进入同一服务器会自动恢复。实现与验证见 [docs/VOLUME.md](docs/VOLUME.md)。
 
 键盘操作:聊天框 `Enter` 发送、`Shift+Enter` 换行;音频设备菜单可用 `Esc` 关闭。
 
@@ -118,6 +122,7 @@ livekit/                 自建 LiveKit SFU 的部署资料与 e2e 测试工具
 | `mint_token` | 只签发 token(调试用) |
 | `voice_join` / `voice_leave` | 进/出房间(join 内部先本地签 token) |
 | `voice_set_mic` / `voice_set_deafened` | 静音 / 闭麦 |
+| `voice_set_participant_volume` | 调整并记住某位参与者的本地播放音量 |
 | `voice_send_chat` | 发文字消息 |
 | `voice_devices` / `voice_set_device` | 枚举 / 切换设备 |
 | `voice_snapshot` | 拉当前状态(界面重载后恢复用) |
@@ -171,8 +176,7 @@ MinVoice 会把关键状态打到 stdout(`[cmd]` / `[voice]` / `[ui]` 前缀)。
 - **运行时只在 Linux 实机验证过**。Windows 已具备完整构建链路(CI 出安装包、
   可本机打包),适配点与真机验证清单见 **[docs/WINDOWS.md](docs/WINDOWS.md)**;
   macOS 未做任何验证。
-- **没有逐人音量**。libwebrtc 的 ADM 播放是混音后统一输出,SDK 也没暴露全局播放
-  音量,所以"单独调小某个人"做不到;闭麦(退订所有远端音频)是可用的替代。
+- 超过 100% 的逐人音量是本地增益，原始声音过大时可能失真。
 - **无备案域名在国内云厂商会被 SNI 拦截**：80/443 被按 TLS SNI 拦截,
   可通过非 443 端口(如 `7443`)绕过。完整证据链与修复方案见 **[docs/HANDOVER.md](docs/HANDOVER.md)**。
 - 打包体积大(debug 375 MB):libwebrtc 是静态链接进去的,release 开 LTO

@@ -18,6 +18,7 @@
 
 use std::sync::Mutex;
 
+use crate::volume::{self, Preferences};
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::{Room, RoomOptions};
@@ -52,6 +53,8 @@ pub struct ParticipantView {
     pub speaking: bool,
     /// 这个人现在是不是没在推麦克风(静音)
     pub mic_muted: bool,
+    /// 本机对该参与者的播放音量百分比，不改变远端麦克风。
+    pub volume: u16,
 }
 
 /// 全量状态快照。参与者数量很少,每次变化直接推全量,
@@ -90,6 +93,8 @@ struct Session {
     mic_publication: Option<LocalTrackPublication>,
     mic_enabled: bool,
     deafened: bool,
+    server_url: String,
+    volumes: Preferences,
     event_task: tokio::task::JoinHandle<()>,
 }
 
@@ -141,6 +146,7 @@ impl VoiceState {
             is_local: true,
             speaking: local.is_speaking(),
             mic_muted: !session.mic_enabled,
+            volume: volume::DEFAULT_VOLUME,
         }];
 
         for (identity, p) in room.remote_participants() {
@@ -152,6 +158,7 @@ impl VoiceState {
             let id = identity.to_string();
             participants.push(ParticipantView {
                 name: display_name(&p.name(), &id),
+                volume: session.volumes.get(&session.server_url, &id),
                 identity: id,
                 is_local: false,
                 speaking: p.is_speaking(),
@@ -190,6 +197,12 @@ impl VoiceState {
         let _rt = self.enter();
 
         self.leave()?;
+
+        let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+        let volumes = Preferences::load(&config_dir).unwrap_or_else(|error| {
+            let _ = app.emit("voice://notice", error);
+            Preferences::default()
+        });
 
         // 连之前先落一行日志:排查连不上时,至少知道参数对不对
         println!(
@@ -271,6 +284,9 @@ impl VoiceState {
 
         // 4) 事件循环 → 推给前端
         // Room 不是 Clone,所以事件任务不持有它;需要状态时通过 AppHandle 拿。
+        // Hold the session lock until installation so queued TrackSubscribed events
+        // cannot be processed before their saved listening preferences exist.
+        let mut guard = self.session.lock().unwrap();
         let app_for_task = app.clone();
         let event_task = self.rt.spawn(async move {
             while let Some(event) = events.recv().await {
@@ -279,17 +295,18 @@ impl VoiceState {
             let _ = app_for_task.emit("voice://closed", ());
         });
 
-        {
-            let mut guard = self.session.lock().unwrap();
-            *guard = Some(Session {
-                room,
-                audio,
-                mic_publication: Some(publication),
-                mic_enabled: true,
-                deafened: false,
-                event_task,
-            });
-        }
+        *guard = Some(Session {
+            room,
+            audio,
+            mic_publication: Some(publication),
+            mic_enabled: true,
+            deafened: false,
+            server_url: input.url,
+            volumes,
+            event_task,
+        });
+        apply_listening_preferences(guard.as_ref().unwrap());
+        drop(guard);
 
         Self::emit_snapshot(&app);
         Ok(())
@@ -354,6 +371,39 @@ impl VoiceState {
                 }
             }
             session.deafened = deafened;
+        }
+        Self::emit_snapshot(app);
+        Ok(())
+    }
+
+    pub fn set_participant_volume(
+        &self,
+        app: &AppHandle,
+        identity: &str,
+        percent: u16,
+    ) -> Result<(), String> {
+        volume::gain(percent)?;
+        let _rt = self.enter();
+        {
+            let mut guard = self.session.lock().unwrap();
+            let session = guard.as_mut().ok_or("还没进入房间")?;
+            let participant = session
+                .room
+                .remote_participants()
+                .into_values()
+                .find(|p| p.identity().to_string() == identity)
+                .ok_or("该参与者已离开房间")?;
+            let previous = session.volumes.get(&session.server_url, identity);
+            let mut next = session.volumes.clone();
+            next.set(&session.server_url, identity, percent)?;
+            let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+            if let Err(error) =
+                set_remote_volume(&participant, percent).and_then(|_| next.save(&dir))
+            {
+                let _ = set_remote_volume(&participant, previous);
+                return Err(error);
+            }
+            session.volumes = next;
         }
         Self::emit_snapshot(app);
         Ok(())
@@ -480,24 +530,48 @@ fn connection_label(state: ConnectionState) -> String {
     .to_string()
 }
 
+fn set_remote_volume(participant: &RemoteParticipant, percent: u16) -> Result<(), String> {
+    let gain = volume::gain(percent)?;
+    for publication in participant.track_publications().values() {
+        if let Some(RemoteTrack::Audio(track)) = publication.track() {
+            if !track.rtc_track().set_playout_volume(gain) {
+                return Err("设置本地播放音量失败".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_listening_preferences(session: &Session) {
+    for participant in session.room.remote_participants().values() {
+        let percent = session
+            .volumes
+            .get(&session.server_url, &participant.identity().to_string());
+        if let Err(error) = set_remote_volume(participant, percent) {
+            eprintln!("[voice] {error}");
+        }
+        if session.deafened {
+            for publication in participant.track_publications().values() {
+                if publication.kind() == TrackKind::Audio && publication.is_subscribed() {
+                    publication.set_subscribed(false);
+                }
+            }
+        }
+    }
+}
+
 fn handle_event(app: &AppHandle, event: RoomEvent) {
     // A newly published track must respect the existing listening preference too.
     if matches!(
         &event,
-        RoomEvent::TrackPublished { .. } | RoomEvent::TrackSubscribed { .. }
+        RoomEvent::TrackPublished { .. }
+            | RoomEvent::TrackSubscribed { .. }
+            | RoomEvent::Reconnected
     ) {
         let state = app.state::<VoiceState>();
         let guard = state.session.lock().unwrap();
         if let Some(session) = guard.as_ref() {
-            if session.deafened {
-                for participant in session.room.remote_participants().values() {
-                    for publication in participant.track_publications().values() {
-                        if publication.kind() == TrackKind::Audio && publication.is_subscribed() {
-                            publication.set_subscribed(false);
-                        }
-                    }
-                }
-            }
+            apply_listening_preferences(session);
         }
     }
     match event {

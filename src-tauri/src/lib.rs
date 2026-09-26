@@ -12,6 +12,7 @@
 mod store;
 mod token;
 mod voice;
+mod volume;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
@@ -255,6 +256,16 @@ fn voice_set_deafened(
 }
 
 #[tauri::command]
+fn voice_set_participant_volume(
+    app: tauri::AppHandle,
+    state: State<'_, VoiceState>,
+    identity: String,
+    volume: u16,
+) -> Result<(), String> {
+    state.set_participant_volume(&app, &identity, volume)
+}
+
+#[tauri::command]
 fn voice_send_chat(state: State<'_, VoiceState>, text: String) -> Result<(), String> {
     state.send_chat(text)
 }
@@ -296,6 +307,7 @@ pub fn run() {
             voice_leave,
             voice_set_mic,
             voice_set_deafened,
+            voice_set_participant_volume,
             voice_send_chat,
             voice_devices,
             voice_set_device,

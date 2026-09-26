@@ -43,6 +43,11 @@ livekit = { version = "=0.9.1", features = ["rustls-tls-native-roots"] }
 livekit-signaling = "=0.1.2"
 livekit-data-stream = "=0.1.5"
 
+# Minimal native per-track playout-volume binding; see vendor/README.md.
+[patch.crates-io]
+libwebrtc = { path = "vendor/libwebrtc-0.3.49" }
+webrtc-sys = { path = "vendor/webrtc-sys-0.3.46" }
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

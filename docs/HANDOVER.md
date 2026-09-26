@@ -168,8 +168,10 @@ PlatformAudio::new()                    // 内部会 set_adm_playout_enabled(tru
 - **静音**:对本地 `LocalTrackPublication` 调 `mute()` / `unmute()`。
 - **闭麦**:对**所有远端音频轨道**调 `RemoteTrackPublication::set_subscribed(!deafened)`。
 
-SDK **没有**全局播放音量、也没有逐人音量 —— 所以「单独调小某个人」做不到,
-闭麦是目前唯一的替代。前端 CSS 里残留的 `.volume` 类是无用的,可以删。
+上游 Rust SDK 没有暴露逐人音量；现在已通过本地绑定补齐 libwebrtc 的
+`AudioSourceInterface::SetVolume`，在原生混音前调整每位参与者的音量。
+范围 0–200%，按服务器与参与者 ID 持久化，详见 [VOLUME.md](VOLUME.md)。
+全局停止收听仍使用退订音轨，恢复收听后会重新应用逐人音量。
 
 ### 5.5 URL 规整
 

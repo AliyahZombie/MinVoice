@@ -124,6 +124,8 @@ pnpm tauri build --debug --no-bundle    # 快速验证：只出 exe（带控制�
 6. [ ] 重启应用：配置仍在（`%APPDATA%\com.aliyah.minvoice\settings.json`）
 7. [ ] 防火墙弹窗（首次 UDP 出站）选择“允许”
 8. [ ] 双人互通（Windows ↔ Linux），再测 3 人以上多对多
+9. [ ] 远端参与者卡片调节 0 / 50 / 100 / 200%：只影响本机听到的该用户；
+       重启后保留音量，停止收听再恢复、对方重新开麦后仍生效
 
 排查提示：
 

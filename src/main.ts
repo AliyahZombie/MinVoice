@@ -8,7 +8,7 @@ interface Settings {
   room: string; ttl: string; micDeviceId: string; speakerDeviceId: string;
   echoCancellation: boolean; noiseSuppression: boolean; autoGainControl: boolean; autoJoin: boolean;
 }
-interface Participant { identity: string; name: string; isLocal: boolean; speaking: boolean; micMuted: boolean }
+interface Participant { identity: string; name: string; isLocal: boolean; speaking: boolean; micMuted: boolean; volume: number }
 interface Snapshot { connection: string; room: string; identity: string; participants: Participant[]; micEnabled: boolean; deafened: boolean }
 interface Device { id: string; name: string; isDefault: boolean }
 interface Devices { mics: Device[]; speakers: Device[] }
@@ -70,7 +70,7 @@ function render() {
   $('#participants').hidden = !inRoom;
   $('#participant-count').textContent = `${inRoom ? snapshot!.participants.length : 0} 人在线`;
   if (inRoom) {
-    $('#participants').innerHTML = snapshot!.participants.map(p => `<article data-tone="${tone(p.identity)}" class="participant ${p.speaking && !p.micMuted ? 'is-speaking' : ''}"><span class="participant-tag">${p.isLocal ? '你' : '在房间'}</span><div class="avatar" data-tone="${tone(p.identity)}">${escape(Array.from(p.name)[0] || '?')}</div><h3>${escape(p.name)}</h3><div class="participant-state">${icon(p.micMuted ? 'micOff' : 'mic')}<span>${p.micMuted ? '麦克风已关闭' : p.speaking ? '正在说话' : '正在聆听'}</span></div><div class="speaking-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></article>`).join('');
+    renderParticipants();
   }
   $('#dock-title').textContent = live ? '语音已连接' : inRoom ? '正在重连…' : '未连接';
   if (!inRoom) $('#dock-subtitle').textContent = 'MinVoice';
@@ -93,10 +93,84 @@ function render() {
   $<HTMLButtonElement>('#send-button').disabled = !live || !$<HTMLTextAreaElement>('#chat-input').value.trim();
 }
 function tone(identity: string) { return [...identity].reduce((sum, c) => sum + c.charCodeAt(0), 0) % 4; }
+
+const participantCards = new Map<string, HTMLElement>();
+const pendingVolumes = new Map<string, number>();
+const volumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const volumeRequests = new Set<string>();
+
+function renderParticipants() {
+  const container = $('#participants');
+  const participants = active() ? snapshot!.participants : [];
+  const identities = new Set(participants.map(p => p.identity));
+  for (const [identity, card] of participantCards) {
+    if (!identities.has(identity)) {
+      card.remove(); participantCards.delete(identity);
+      clearTimeout(volumeTimers.get(identity)); volumeTimers.delete(identity); pendingVolumes.delete(identity);
+    }
+  }
+  participants.forEach((p, index) => {
+    let card = participantCards.get(p.identity);
+    if (!card) {
+      card = document.createElement('article'); card.className = 'participant';
+      card.dataset.identity = p.identity; card.dataset.tone = String(tone(p.identity));
+      card.innerHTML = `<span class="participant-tag"></span><div class="avatar" data-tone="${tone(p.identity)}"></div><h3></h3><div class="participant-state"></div>${p.isLocal ? '' : `<div class="participant-volume" title="本地音量，仅影响你听到的声音"><label>${icon('headphones')}<input type="range" min="0" max="200" step="1" value="100" /></label><output>100%</output><button type="button" title="恢复 100%" aria-label="恢复原声音量">${icon('refresh')}</button></div>`}`;
+      const slider = card.querySelector<HTMLInputElement>('input[type=range]');
+      slider?.addEventListener('input', () => queueVolume(p.identity, Number(slider.value)));
+      card.querySelector('button')?.addEventListener('click', () => queueVolume(p.identity, 100));
+      participantCards.set(p.identity, card);
+    }
+    // Preserve focused/dragged sliders across frequent speaker snapshots.
+    if (container.children[index] !== card) container.insertBefore(card, container.children[index] ?? null);
+    card.classList.toggle('is-speaking', p.speaking && !p.micMuted);
+    card.querySelector('.participant-tag')!.textContent = p.isLocal ? '你' : '在房间';
+    card.querySelector('.avatar')!.textContent = Array.from(p.name)[0] || '?';
+    card.querySelector('h3')!.textContent = p.name;
+    card.querySelector('.participant-state')!.innerHTML = `${icon(p.micMuted ? 'micOff' : 'mic')}<span>${p.micMuted ? '麦克风已关闭' : p.speaking ? '正在说话' : '正在聆听'}</span>`;
+    const slider = card.querySelector<HTMLInputElement>('input[type=range]');
+    if (slider) {
+      const percent = pendingVolumes.get(p.identity) ?? p.volume;
+      slider.value = String(percent); slider.disabled = !connected();
+      slider.setAttribute('aria-label', `${p.name}的本地音量`);
+      slider.setAttribute('aria-valuetext', percent === 0 ? '本地静音' : `${percent}%`);
+      card.querySelector('output')!.textContent = `${percent}%`;
+      card.querySelector('button')!.disabled = !connected();
+      card.classList.toggle('is-locally-muted', percent === 0);
+    }
+  });
+}
+
+function queueVolume(identity: string, volume: number) {
+  pendingVolumes.set(identity, volume);
+  clearTimeout(volumeTimers.get(identity));
+  volumeTimers.set(identity, setTimeout(() => void flushVolume(identity), 100));
+  renderParticipants();
+}
+
+async function flushVolume(identity: string) {
+  if (volumeRequests.has(identity) || !pendingVolumes.has(identity)) return;
+  const volume = pendingVolumes.get(identity)!;
+  volumeRequests.add(identity);
+  try {
+    await invoke('voice_set_participant_volume', { identity, volume });
+    // Reflect success even if the snapshot event has not arrived yet.
+    const participant = snapshot?.participants.find(p => p.identity === identity);
+    if (participant) participant.volume = volume;
+  } catch (error) { notice(error); }
+  finally {
+    volumeRequests.delete(identity);
+    if (pendingVolumes.get(identity) === volume) pendingVolumes.delete(identity);
+    else if (pendingVolumes.has(identity)) void flushVolume(identity);
+    renderParticipants();
+  }
+}
+
 function acceptSnapshot(value: Snapshot | null) {
   if (value && value.connection !== 'disconnected' && !active()) startedAt = Date.now();
   if (!value || value.connection === 'disconnected') startedAt = null;
-  snapshot = value; render();
+  snapshot = value;
+  if (!active()) renderParticipants();
+  render();
 }
 async function refreshSnapshot() { acceptSnapshot(await invoke<Snapshot | null>('voice_snapshot')); }
 async function action(command: string, args?: Record<string, unknown>) {
