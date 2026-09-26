@@ -1,0 +1,4 @@
+# LiveKit's prebuilt Windows libwebrtc uses /MT. Rust and the C++ bridge
+# must use the same static CRT for tests, development and release builds.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

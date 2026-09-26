@@ -19,7 +19,15 @@ Windows 打包**不需要从源码编译 libwebrtc**，也不需要 clang/cmake�
   桥接层必须用 **clang++**（gcc 会因 `trivial_abi` 被静默忽略而破坏调用约定）。
   细节见 `webrtc-sys` 构建脚本里的注释。
 
-所以 Windows 的“适配”主要是三件事：**打包配置、CI 工作流、真机验证清单**。
+**运行库必须一致**：官方 libwebrtc 使用 MSVC 静态运行库（`/MT`），
+Rust 默认使用动态运行库（`/MD`），混用会在 `cargo test` 链接阶段出现
+`LNK2038 RuntimeLibrary: MT_StaticRelease / MD_DynamicRelease` 和 `LNK2005`。
+仓库根目录的 `.cargo/config.toml` 为 Windows MSVC 目标启用 `+crt-static`，
+让 Rust 和 `cc` 编译的 C++ 桥接层统一使用静态运行库。
+此设置同时覆盖本地开发、测试、debug 和 release；Linux/macOS 不受影响。
+请从仓库根目录或 `src-tauri` 内运行构建，以便 Cargo 读取配置。
+
+所以 Windows 的适配包括：**运行库配置、打包配置、CI 工作流、真机验证清单**。
 Rust 代码本身没有平台分支需要新增（已有的跨平台处理见第 4 节）。
 
 ---
@@ -33,7 +41,7 @@ Rust 代码本身没有平台分支需要新增（已有的跨平台处理见第
 | Windows 10/11 x64 | 应用输出为 x64 |
 | Visual Studio Build Tools 2022 | 需要 “使用 C++ 的桌面开发” 工作负载 + Windows SDK |
 | Rust（stable，MSVC 工具链） | rustup 默认安装即是 |
-| Node 20+ 与 pnpm | 仓库锁文件由 pnpm 11 生成（lockfileVersion 9.0） |
+| Node 22.12+ 与 pnpm 11 | CI 使用 Node 22、pnpm 11.20.0（lockfileVersion 9.0） |
 | WebView2 Runtime | Win11 自带；Win10 一般随 Edge 已安装，安装器也会兜底 |
 
 命令（与 Linux 相同）：
@@ -81,8 +89,8 @@ pnpm tauri build --debug --no-bundle    # 快速验证：只出 exe（带控制�
 
 1. 检出代码；开启 Windows 长路径支持（libwebrtc 解压路径较深，保险步骤）
 2. 安装 pnpm 11 / Node 22 / Rust stable（MSVC）；缓存 Rust 构建目录
-3. `pnpm install --frozen-lockfile` → `pnpm build`（tsc + vite）→ `cargo test`
-4. `pnpm tauri build`（release：NSIS + MSI）或调试构建
+3. `pnpm install --frozen-lockfile` → `pnpm build`（tsc + vite）→ `cargo test --locked`
+4. `pnpm tauri build --ci -- --locked`（release：NSIS + MSI）或调试构建；锁定 Rust 依赖
 5. 整理产物：安装器、MSI、便携版 exe、`SHA256SUMS.txt`
 6. 上传 Artifacts；若为 `v*` tag 则创建 Release
 
@@ -94,6 +102,7 @@ pnpm tauri build --debug --no-bundle    # 快速验证：只出 exe（带控制�
 
 | 位置 | 处理方式 |
 | --- | --- |
+| `.cargo/config.toml` | Windows MSVC 统一使用静态 CRT，避免 libwebrtc 与 Rust/C++ 桥接层的运行库链接冲突 |
 | `src-tauri/src/store.rs` | 配置目录 0700 / 文件 0600 的权限收紧只在 Unix 生效（`#[cfg(unix)]`）；Windows 依赖用户目录 ACL。配置路径由 Tauri 决定：Windows 上是 `%APPDATA%\com.aliyah.minvoice\settings.json` |
 | `src-tauri/src/main.rs` | release 构建带 `windows_subsystem = "windows"`，不会弹出控制台窗口 |
 | `src-tauri/src/voice.rs` | 音频走 libwebrtc ADM：Linux 用 ALSA、Windows 用 WASAPI，同一套 Rust API；`enter()` 线程守卫在 Windows 同样必要（Tauri 同步命令跑在主线程，SDK 回调里 `tokio::spawn` 需要 runtime 上下文） |

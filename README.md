@@ -36,7 +36,7 @@ pnpm tauri build --debug --no-bundle
 ./src-tauri/target/debug/minvoice
 ```
 
-依赖(桌面通用):Node 20+/pnpm、Rust 1.85+。
+依赖(桌面通用):Node 22.12+/pnpm 11、Rust stable。
 
 Linux 额外需要系统库,编译 C++ 桥接层还需要 **clang**(不是 gcc):
 

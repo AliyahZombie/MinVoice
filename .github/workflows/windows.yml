@@ -19,6 +19,8 @@ on:
   push:
     branches: [main]
     paths:
+      - ".cargo/**"
+      - "public/**"
       - "src/**"
       - "src-tauri/**"
       - "index.html"
@@ -90,15 +92,15 @@ jobs:
 
       - name: Rust 单元测试（token / 配置持久化）
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --locked
 
       - name: 构建 Windows 安装器（NSIS + MSI）
         if: ${{ !inputs.debug }}
-        run: pnpm tauri build
+        run: pnpm tauri build --ci -- --locked
 
       - name: 构建调试版（仅 exe，不打包安装器）
         if: ${{ inputs.debug }}
-        run: pnpm tauri build --debug --no-bundle
+        run: pnpm tauri build --ci --debug --no-bundle -- --locked
 
       - name: 整理产物（release）
         if: ${{ !inputs.debug }}
