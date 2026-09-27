@@ -22,6 +22,10 @@ livekit/credentials*
 !livekit/credentials.env.example
 livekit/livekit-config.yaml
 
+# 分享给朋友的连接凭据及其备份，只保留在本机
+data.env
+data.env.*
+
 # 本机 SSH 配置（服务器地址与密钥路径），只存在于开发机
 .sshcfg/
 
@@ -38,3 +42,7 @@ livekit/e2e/results/
 *.njsproj
 *.sln
 *.sw?
+
+# Web/PWA end-to-end test artifacts
+test-results/
+playwright-report/

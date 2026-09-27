@@ -5,8 +5,8 @@
 极简多人语音聊天客户端:填服务器地址 + API Secret 就能进房间说话,
 **Access Token 在本机签发**,不依赖任何远程鉴权服务。
 
-纯 Tauri(Linux 上是 GTK + WebKitGTK,Windows 上是 WebView2),但**音频链路完全在 Rust 里**,
-不在 WebView 里跑 —— 原因见下方"为什么音频不在前端"。
+桌面版使用 Tauri(Linux 上是 GTK + WebKitGTK,Windows 上是 WebView2),**桌面音频链路完全在 Rust 里**。
+另有浏览器 / PWA 版，使用浏览器 WebRTC，可安装到桌面或主屏幕；两版共用界面和 LiveKit 服务器。
 
 ---
 
@@ -26,6 +26,23 @@
 ---
 
 ## 跑起来
+
+### 浏览器 / PWA
+
+线上入口：**https://voice.aliyahzombie.top**，部署在 SSH 别名 `us2` 对应的服务器。
+首次在设置中填写自己的 LiveKit WSS 地址、API Key 和 API Secret；前端域名与语音服务器可以不同。
+Chrome / Edge 可用页面“安装”或浏览器菜单安装，iOS Safari 使用“分享 → 添加到主屏幕”。
+离线可打开界面，语音和聊天仍需联网；网页更新不会主动打断通话。
+
+网页版 API Secret 仅存当前标签页的 sessionStorage，本地签发 JWT，不上传静态网站服务器；
+普通配置和逐人音量保存在 localStorage。关闭会话后需重新填写密钥，浏览器恢复会话时可能恢复 sessionStorage。
+与桌面版不同，浏览器脚本可访问用户填写的密钥，因此只应在可信设备上使用；构建产物不包含服务器凭据。
+这是自用客户端，不是给公众下发服务器管理密钥的鉴权服务。
+
+本地预览：`pnpm install && pnpm build && pnpm preview`。
+发布和回滚说明见 **[docs/PWA.md](docs/PWA.md)**，部署命令为 `pnpm deploy:pwa`。
+
+### 桌面版
 
 ```bash
 pnpm install
@@ -99,9 +116,14 @@ AEC/降噪/自动增益也是它自带的。
 ## 代码结构
 
 ```
-src/                     前端:只负责界面,不碰音频
+src/                     共享界面与运行时适配
   main.ts                收集表单 → invoke → 按快照重画
+  runtime.ts             桌面 IPC / 浏览器运行时分流
+  web-runtime.ts         网页端 WebRTC 语音、聊天、设备与配置
+  web-token.ts           网页端 Web Crypto 本地签发 JWT
+  pwa.ts                 安装入口、离线缓存与手动更新
   styles.css
+deploy/                  PWA 构建发布脚本与独立 Nginx 虚拟主机
 index.html
 src-tauri/src/
   lib.rs                 Tauri 命令、配置读写、token 签发入口

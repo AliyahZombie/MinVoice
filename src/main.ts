@@ -1,6 +1,5 @@
 import './styles.css';
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { invoke, listen, desktop } from './runtime';
 import { icon } from './icons';
 
 interface Settings {
@@ -16,7 +15,6 @@ interface LoadResult { settings: Settings; hasSecret: boolean; prefilledFrom: st
 interface Chat { id: string; from: string; text: string; timestamp: number; own?: boolean }
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const escape = (text: string) => text.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
-const desktop = isTauri();
 let settings: Settings = { url: '', apiKey: '', identity: '', displayName: '', room: 'voice-1', ttl: '6h', micDeviceId: '', speakerDeviceId: '', echoCancellation: true, noiseSuppression: true, autoGainControl: true, autoJoin: false };
 let snapshot: Snapshot | null = null;
 let hasSecret = false;
@@ -197,7 +195,6 @@ function populateDeviceSelect(name: string, list: Device[], selected: string) {
   select.value = selected;
 }
 async function refreshDevices() {
-  if (!desktop) return;
   $<HTMLButtonElement>('#refresh-devices').disabled = true;
   try {
     devices = await invoke<Devices>('voice_devices');
@@ -229,10 +226,9 @@ async function openDeviceMenu(trigger: HTMLButtonElement) {
     ], { duration: 320, easing: 'cubic-bezier(.16, 1, .3, 1)' });
   }
   const request = ++deviceMenuRequest;
-  $('#quick-device-status').textContent = desktop ? '正在读取设备…' : '请在桌面客户端选择音频设备';
+  $('#quick-device-status').textContent = '正在读取设备…';
   $<HTMLSelectElement>('#quick-mic').disabled = true;
   $<HTMLSelectElement>('#quick-speaker').disabled = true;
-  if (!desktop) return;
   try {
     const result = await invoke<Devices>('voice_devices');
     if (request !== deviceMenuRequest) return;
@@ -295,7 +291,9 @@ function openSettings(tab = 'server') {
   }
   field('apiSecret').value = '';
   (field('apiSecret') as HTMLInputElement).placeholder = hasSecret ? '已保存 · 留空保持不变' : '输入 API Secret';
-  $('#secret-hint').textContent = hasSecret ? '密钥已保存在本机，不会回传到界面。留空保留，输入新值替换。' : '凭据仅保存在这台设备上，保存后不再显示密钥。';
+  $('#secret-hint').textContent = desktop
+    ? (hasSecret ? '密钥已保存在本机，不会回传到界面。留空保留，输入新值替换。' : '凭据仅保存在这台设备上，保存后不再显示密钥。')
+    : 'API Secret 仅存当前标签页会话，用于浏览器本地签发凭证，不上传本站。关闭后需重新填写；浏览器脚本可访问，请只在可信设备上使用。';
   populateDeviceSelect('micDeviceId', devices.mics, settings.micDeviceId);
   populateDeviceSelect('speakerDeviceId', devices.speakers, settings.speakerDeviceId);
   $('#settings-error').hidden = true;
@@ -312,7 +310,6 @@ async function loadSettings() {
 }
 async function join() {
   if (busy) return;
-  if (!desktop) { notice('当前是界面预览。请启动桌面客户端，连接服务器并使用语音。'); return; }
   if (!settings.url || !settings.apiKey || !hasSecret) { openSettings(); toast('先配置服务器，再加入房间'); return; }
   const room = $<HTMLInputElement>('#join-room').value.trim();
   if (!room) { $<HTMLInputElement>('#join-room').focus(); return; }
@@ -385,7 +382,6 @@ document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => {
 settingsForm.addEventListener('invalid', () => setTab('server'), true);
 settingsForm.addEventListener('submit', async e => {
   e.preventDefault(); $('#settings-error').hidden = true;
-  if (!desktop) { $('#settings-error').textContent = '浏览器仅供预览，请在桌面客户端保存设置。'; $('#settings-error').hidden = false; return; }
   const next = { ...settings };
   for (const key of Object.keys(settings) as (keyof Settings)[]) {
     if (key === 'apiSecret') continue;
@@ -419,7 +415,11 @@ setInterval(() => {
 }, 1000);
 async function init() {
   render();
-  if (!desktop) { ready = true; $('#runtime-note').textContent = '浏览器预览'; render(); return; }
+  if (!desktop) {
+    $('#runtime-note').textContent = 'MinVoice Web';
+    $('#device-hint').textContent = '设备由浏览器提供；允许麦克风后可显示完整名称。';
+    void import('./pwa').then(({ setupPwa }) => setupPwa(active, toast)).catch(() => notice('离线缓存暂不可用，联网语音仍可使用。'));
+  }
   try {
     await listen<Snapshot>('voice://snapshot', event => acceptSnapshot(event.payload));
     await listen<Chat>('voice://chat', event => appendMessage(event.payload));
