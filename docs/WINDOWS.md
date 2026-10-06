@@ -129,9 +129,24 @@ pnpm tauri build --debug --no-bundle    # 快速验证：只出 exe（带控制�
 
 排查提示：
 
+- 若旧版出现 `启动麦克风采集失败: Audio operation failed: start_recording failed`，
+  尤其是第一个进入空房间时，可能是强制启用 Windows 内置 AEC 导致。
+  当前固定版本的 [WebRTC Windows ADM](https://github.com/webrtc-sdk/webrtc/blob/89d790b/modules/audio_device/win/audio_device_core_win.cc)
+  在内置 AEC 开启且播放尚未启动时，会拒绝 `StartRecording()`。
+  代码已改为 `prefer_hardware_processing: false`，使用 WebRTC 软件 AEC；
+  需要重新构建 Windows 版才能生效。旧版可先关闭“回声消除”后重试，建议戴耳机。
+- 更新后仍失败时，检查“设置 → 隐私和安全性 → 麦克风”中的麦克风访问权限，
+  特别是“允许桌面应用访问麦克风”；重新选择可用的输入设备，并排查独占占用。
 - release 版没有控制台。排查请用 `pnpm tauri build --debug --no-bundle`
   产出的 exe，stdout 里有 `[cmd]` / `[voice]` / `[ui]` 前缀日志。
 - 没声音时依次检查：系统音量合成器里 MinVoice 是否被静音 →
   输出设备是否正确 → 设备是否被其它程序独占（声音设置 → 设备属性 → 高级）。
 - 连不上时：先 `node livekit/gen-token.mjs` 手签一个 token 排除凭据问题，
   再看 `[voice]` 日志里的连接与断开原因。
+
+本次采集修复的 Windows 真机回归（待验证）：
+
+- 开启回声消除，第一个进入空房间，确认采集正常启动；第二人加入后能听到声音。
+- 退出后重复进入，测试系统默认麦克风和手动选择的麦克风。
+- 保存的设备拔出后，应提示重新选择；重新选好后可以入房。
+- 禁用桌面应用麦克风权限后应提示失败，恢复权限后可以重新入房。

@@ -235,32 +235,43 @@ impl VoiceState {
                 echo_cancellation: input.echo_cancellation,
                 noise_suppression: input.noise_suppression,
                 auto_gain_control: input.auto_gain_control,
-                prefer_hardware_processing: true,
+                // Windows 内置 AEC (DMO) 要求先启动 playout 才能 StartRecording。
+                // 首个用户进房时可能尚无播放流,桌面端使用 WebRTC 软件 AEC。
+                prefer_hardware_processing: false,
             })
             .map_err(|e| format!("配置音频处理失败: {e}"))?;
 
         if !input.mic_device_id.is_empty() {
-            if let Some(dev) = audio
+            let dev = audio
                 .recording_devices()
                 .find(|d| d.id.as_str() == input.mic_device_id)
-            {
-                let _ = audio.set_recording_device(&dev.id);
-            }
+                .ok_or("所选麦克风已不可用,请重新选择麦克风或系统默认设备")?;
+            audio
+                .set_recording_device(&dev.id)
+                .map_err(|e| format!("选择麦克风「{}」失败: {e}", dev.name))?;
         }
         if !input.speaker_device_id.is_empty() {
-            if let Some(dev) = audio
+            let dev = audio
                 .playout_devices()
                 .find(|d| d.id.as_str() == input.speaker_device_id)
-            {
-                let _ = audio.set_playout_device(&dev.id);
-            }
+                .ok_or("所选扬声器已不可用,请重新选择扬声器或系统默认设备")?;
+            audio
+                .set_playout_device(&dev.id)
+                .map_err(|e| format!("选择扬声器「{}」失败: {e}", dev.name))?;
         }
 
         // ADM 的采集要显式启动。不启动的话轨道照样发布成功,但推上去全是静音,
         // 而且不会有任何报错 —— 所以这里必须打日志,不然没法排查。
         audio
             .start_recording()
-            .map_err(|e| format!("启动麦克风采集失败: {e}"))?;
+            .map_err(|e| {
+                let hint = if cfg!(target_os = "windows") {
+                    "请检查 Windows 设置中的麦克风访问权限及“允许桌面应用访问麦克风”,并确认设备未被禁用或独占"
+                } else {
+                    "请检查麦克风权限,并确认设备未被禁用或独占"
+                };
+                format!("启动麦克风采集失败: {e}。{hint}")
+            })?;
         println!("[voice] ADM 采集已启动");
 
         // 3) 把麦克风作为一条音频轨推上去
